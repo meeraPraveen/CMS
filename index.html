@@ -180,8 +180,20 @@
         }
 
         button:disabled {
-            opacity: 0.5;
+            opacity: 0.4;
             cursor: not-allowed;
+            background: #6e7681 !important;
+        }
+
+        button.primary-btn:not(:disabled) {
+            background: #238636;
+            color: white;
+            box-shadow: 0 0 0 1px rgba(35, 134, 54, 0.4);
+        }
+
+        button.primary-btn:not(:disabled):hover {
+            background: #2ea043;
+            box-shadow: 0 0 0 2px rgba(46, 160, 67, 0.6);
         }
 
         button.secondary {
@@ -378,7 +390,6 @@
                 <div id="configDisplay" class="hidden">
                     <div class="config-display">
                         <div class="config-line">origin: <span class="config-value" id="displayRepo"></span></div>
-                        <div class="config-line">branch: <span class="config-value" id="displayBranch"></span></div>
                         <div class="config-line">user: <span class="config-value" id="displayUser"></span></div>
                     </div>
                     <div class="actions">
@@ -402,11 +413,6 @@
                         <label>CSV File Path</label>
                         <input type="text" id="filePath" required placeholder="data.csv or path/to/data.csv">
                         <div class="helper-text">Path to your CSV file in the repository</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Branch</label>
-                        <input type="text" id="branch" value="main" placeholder="main">
                     </div>
 
                     <button type="submit" id="saveConfigBtn">Save Configuration</button>
@@ -444,13 +450,16 @@
                     <div class="commit-header">
                         ✍️ Commit Message
                     </div>
-                    <textarea 
-                        class="commit-message" 
-                        id="commitMessage" 
+                    <textarea
+                        class="commit-message"
+                        id="commitMessage"
                         placeholder="Update data.csv&#10;&#10;Add detailed description here (optional)..."
                         required
                     ></textarea>
-                    <button id="commitBtn" disabled>Commit & Push to GitHub</button>
+                    <div style="display: flex; gap: 10px;">
+                        <button id="pushBtn" style="flex: 1;" class="primary-btn">Push to Staging</button>
+                        <button id="createPRBtn" style="flex: 1;" class="primary-btn" disabled>Create Pull Request</button>
+                    </div>
                 </div>
 
                 <div class="status" id="commitStatus"></div>
@@ -468,7 +477,10 @@
             branch: 'main',
             filePath: null,
             csvFile: null,
-            configSaved: false
+            configSaved: false,
+            commitMode: 'pr', // Default to PR mode since direct commit is hidden
+            pushedToStaging: false, // Track if push to staging is complete
+            lastCommitMessage: null // Store commit message from push
         };
 
         // DOM Elements
@@ -480,7 +492,6 @@
         const csvFileInput = document.getElementById('csvFile');
         const uploadBtn = document.getElementById('uploadBtn');
         const fileInfo = document.getElementById('fileInfo');
-        const commitBtn = document.getElementById('commitBtn');
 
         // Initialize
         init();
@@ -531,8 +542,9 @@
             });
 
             // Commit
-            document.getElementById('commitMessage').addEventListener('input', updateCommitButton);
-            document.getElementById('commitBtn').addEventListener('click', handleCommit);
+            document.getElementById('commitMessage').addEventListener('input', updateButtons);
+            document.getElementById('pushBtn').addEventListener('click', handlePushToStaging);
+            document.getElementById('createPRBtn').addEventListener('click', handleCreatePR);
         }
 
         async function handleLogin(e) {
@@ -586,16 +598,15 @@
 
         function handleConfigSave(e) {
             e.preventDefault();
-            
+
             state.owner = document.getElementById('owner').value.trim();
             state.repo = document.getElementById('repo').value.trim();
             state.filePath = document.getElementById('filePath').value.trim();
-            state.branch = document.getElementById('branch').value.trim() || 'main';
+            state.branch = 'main'; // Fixed to main
             state.configSaved = true;
 
             // Update display
             document.getElementById('displayRepo').textContent = `${state.owner}/${state.repo}/${state.filePath}`;
-            document.getElementById('displayBranch').textContent = state.branch;
 
             // Show config display, hide form
             configForm.classList.add('hidden');
@@ -606,17 +617,19 @@
             setTimeout(() => {
                 document.getElementById('configStatus').style.display = 'none';
             }, 2000);
+
+            // Update button states
+            updateButtons();
         }
 
         function showConfigForm() {
             configForm.classList.remove('hidden');
             configDisplay.classList.add('hidden');
-            
+
             // Pre-fill form
             if (state.owner) document.getElementById('owner').value = state.owner;
             if (state.repo) document.getElementById('repo').value = state.repo;
             if (state.filePath) document.getElementById('filePath').value = state.filePath;
-            if (state.branch) document.getElementById('branch').value = state.branch;
         }
 
         function handleFileSelect(e) {
@@ -644,8 +657,8 @@
             `;
             fileInfo.classList.add('show');
             uploadBtn.classList.add('has-file');
-            
-            updateCommitButton();
+
+            updateButtons();
         }
 
         function clearFile() {
@@ -653,15 +666,33 @@
             csvFileInput.value = '';
             fileInfo.classList.remove('show');
             uploadBtn.classList.remove('has-file');
-            updateCommitButton();
+            state.pushedToStaging = false;
+            updateButtons();
         }
 
-        function updateCommitButton() {
+        function updateButtons() {
             const message = document.getElementById('commitMessage').value.trim();
-            commitBtn.disabled = !state.csvFile || !message || !state.configSaved;
+            const pushButton = document.getElementById('pushBtn');
+            const prButton = document.getElementById('createPRBtn');
+
+            if (pushButton) {
+                // Push button enabled when file + message + config saved
+                pushButton.disabled = !state.csvFile || !message || !state.configSaved;
+                console.log('Push button:', {
+                    hasFile: !!state.csvFile,
+                    hasMessage: !!message,
+                    configSaved: state.configSaved,
+                    disabled: pushButton.disabled
+                });
+            }
+
+            if (prButton) {
+                // PR button enabled only after successful push to staging
+                prButton.disabled = !state.pushedToStaging;
+            }
         }
 
-        async function handleCommit() {
+        async function handlePushToStaging() {
             if (!state.csvFile) {
                 showStatus('commitStatus', '✗ Please select a CSV file', 'error');
                 return;
@@ -673,20 +704,28 @@
                 return;
             }
 
-            commitBtn.disabled = true;
+            const pushButton = document.getElementById('pushBtn');
+            pushButton.disabled = true;
             showStatus('commitStatus', '⏳ Reading file...', 'info');
 
             try {
                 // Read file as base64
                 const base64Content = await readFileAsBase64(state.csvFile);
 
-                showStatus('commitStatus', '⏳ Checking if file exists...', 'info');
+                // Target branch is always staging
+                const targetBranch = 'staging';
+
+                // Ensure staging branch exists
+                showStatus('commitStatus', '⏳ Ensuring staging branch exists...', 'info');
+                await ensureStagingBranchExists();
+
+                showStatus('commitStatus', `⏳ Checking if file exists on ${targetBranch}...`, 'info');
 
                 // Check if file exists (to get SHA for update)
                 let sha = null;
                 try {
                     const checkResponse = await fetch(
-                        `https://api.github.com/repos/${state.owner}/${state.repo}/contents/${state.filePath}?ref=${state.branch}`,
+                        `https://api.github.com/repos/${state.owner}/${state.repo}/contents/${state.filePath}?ref=${targetBranch}`,
                         {
                             headers: {
                                 'Authorization': `token ${state.token}`,
@@ -694,7 +733,7 @@
                             }
                         }
                     );
-                    
+
                     if (checkResponse.ok) {
                         const existingFile = await checkResponse.json();
                         sha = existingFile.sha;
@@ -710,7 +749,7 @@
                 const commitData = {
                     message: message,
                     content: base64Content,
-                    branch: state.branch
+                    branch: targetBranch
                 };
 
                 if (sha) {
@@ -718,6 +757,7 @@
                 }
 
                 // Commit to GitHub
+                showStatus('commitStatus', `⏳ Committing to ${targetBranch} branch...`, 'info');
                 const response = await fetch(
                     `https://api.github.com/repos/${state.owner}/${state.repo}/contents/${state.filePath}`,
                     {
@@ -737,23 +777,182 @@
                 }
 
                 const result = await response.json();
-                
+
+                // Mark push as complete
+                state.pushedToStaging = true;
+                state.lastCommitMessage = message;
+
+                // Show push success
+                showStatus('commitStatus', '✓ Successfully pushed to staging branch! You can now create a pull request.', 'success');
+
+                // Enable PR button
+                updateButtons();
+
+            } catch (error) {
+                showStatus('commitStatus', `✗ Error: ${error.message}`, 'error');
+                console.error('Push error:', error);
+            } finally {
+                const pushButton = document.getElementById('pushBtn');
+                if (pushButton) pushButton.disabled = false;
+            }
+        }
+
+        async function handleCreatePR() {
+            if (!state.pushedToStaging) {
+                showStatus('commitStatus', '✗ Please push to staging first', 'error');
+                return;
+            }
+
+            const message = state.lastCommitMessage || document.getElementById('commitMessage').value.trim();
+
+            const prButton = document.getElementById('createPRBtn');
+            prButton.disabled = true;
+            showStatus('commitStatus', '⏳ Creating pull request...', 'info');
+
+            try {
+                const prResult = await createPullRequest(message);
+
                 showStatus(
                     'commitStatus',
-                    `✓ Successfully committed! <a href="${result.content.html_url}" target="_blank">View on GitHub →</a>`,
+                    `✓ Pull request created! <a href="${prResult.html_url}" target="_blank">View PR #${prResult.number} →</a>`,
                     'success'
                 );
 
                 // Reset form
                 clearFile();
                 document.getElementById('commitMessage').value = '';
-                updateCommitButton();
+                state.pushedToStaging = false;
+                state.lastCommitMessage = null;
+                updateButtons();
 
             } catch (error) {
                 showStatus('commitStatus', `✗ Error: ${error.message}`, 'error');
-                console.error('Commit error:', error);
+                console.error('PR creation error:', error);
             } finally {
-                commitBtn.disabled = false;
+                const prButton = document.getElementById('createPRBtn');
+                if (prButton) prButton.disabled = false;
+            }
+        }
+
+        async function ensureStagingBranchExists() {
+            try {
+                // Check if staging branch exists
+                const checkBranchResponse = await fetch(
+                    `https://api.github.com/repos/${state.owner}/${state.repo}/git/refs/heads/staging`,
+                    {
+                        headers: {
+                            'Authorization': `token ${state.token}`,
+                            'Accept': 'application/vnd.github.v3+json'
+                        }
+                    }
+                );
+
+                if (checkBranchResponse.ok) {
+                    // Staging branch exists
+                    return;
+                }
+
+                // Get the main branch SHA
+                const mainBranchResponse = await fetch(
+                    `https://api.github.com/repos/${state.owner}/${state.repo}/git/refs/heads/main`,
+                    {
+                        headers: {
+                            'Authorization': `token ${state.token}`,
+                            'Accept': 'application/vnd.github.v3+json'
+                        }
+                    }
+                );
+
+                if (!mainBranchResponse.ok) {
+                    throw new Error('Could not find main branch');
+                }
+
+                const mainBranchData = await mainBranchResponse.json();
+                const mainSha = mainBranchData.object.sha;
+
+                // Create staging branch from main
+                const createBranchResponse = await fetch(
+                    `https://api.github.com/repos/${state.owner}/${state.repo}/git/refs`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `token ${state.token}`,
+                            'Accept': 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            ref: 'refs/heads/staging',
+                            sha: mainSha
+                        })
+                    }
+                );
+
+                if (!createBranchResponse.ok) {
+                    const errorData = await createBranchResponse.json();
+                    throw new Error(errorData.message || 'Failed to create staging branch');
+                }
+
+            } catch (error) {
+                throw new Error(`Failed to ensure staging branch exists: ${error.message}`);
+            }
+        }
+
+        async function createPullRequest(commitMessage) {
+            try {
+                // Check if a PR already exists
+                const existingPRResponse = await fetch(
+                    `https://api.github.com/repos/${state.owner}/${state.repo}/pulls?head=${state.owner}:staging&base=main&state=open`,
+                    {
+                        headers: {
+                            'Authorization': `token ${state.token}`,
+                            'Accept': 'application/vnd.github.v3+json'
+                        }
+                    }
+                );
+
+                if (existingPRResponse.ok) {
+                    const existingPRs = await existingPRResponse.json();
+                    if (existingPRs.length > 0) {
+                        // Return existing PR
+                        return existingPRs[0];
+                    }
+                }
+
+                // Create new PR
+                const prData = {
+                    title: commitMessage.split('\n')[0], // Use first line as title
+                    head: 'staging',
+                    base: 'main',
+                    body: commitMessage
+                };
+
+                const response = await fetch(
+                    `https://api.github.com/repos/${state.owner}/${state.repo}/pulls`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `token ${state.token}`,
+                            'Accept': 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(prData)
+                    }
+                );
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    // Provide more detailed error message
+                    let errorMsg = errorData.message || `PR creation failed: ${response.status}`;
+                    if (errorData.errors) {
+                        errorMsg += ` - ${JSON.stringify(errorData.errors)}`;
+                    }
+                    throw new Error(errorMsg);
+                }
+
+                return await response.json();
+
+            } catch (error) {
+                throw new Error(`Failed to create pull request: ${error.message}`);
             }
         }
 
