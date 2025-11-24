@@ -436,11 +436,25 @@
                 <p class="subtitle">Upload and commit your CSV file</p>
 
                 <div class="form-group">
-                    <label>Select CSV File</label>
+                    <label>CSV File Management</label>
+
+                    <!-- Current file info -->
+                    <div class="file-info" id="currentFileInfo" style="display: none; margin-bottom: 15px; background: #161b22; border-color: #58a6ff;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="color: #58a6ff; font-weight: bold; margin-bottom: 4px;">📄 Current file in staging:</div>
+                                <div id="currentFileName" style="color: #c9d1d9;"></div>
+                                <div id="currentFileDetails" style="color: #8b949e; font-size: 12px; margin-top: 4px;"></div>
+                            </div>
+                            <button class="secondary" onclick="downloadCurrentFile()" style="width: auto; padding: 8px 16px;">Download Current</button>
+                        </div>
+                    </div>
+
+                    <!-- Upload new file -->
                     <label for="csvFile" class="file-upload-btn" id="uploadBtn">
                         <div style="font-size: 32px; margin-bottom: 10px;">📄</div>
-                        <div>Click to select or drag & drop your CSV file</div>
-                        <div style="font-size: 12px; margin-top: 8px; color: #6e7681;">Accepted: .csv files</div>
+                        <div id="uploadBtnText">Click to select or drag & drop your CSV file</div>
+                        <div style="font-size: 12px; margin-top: 8px; color: #6e7681;" id="uploadBtnSubtext">Accepted: .csv files</div>
                     </label>
                     <input type="file" id="csvFile" accept=".csv" required>
                     <div class="file-info" id="fileInfo"></div>
@@ -480,7 +494,10 @@
             configSaved: false,
             commitMode: 'pr', // Default to PR mode since direct commit is hidden
             pushedToStaging: false, // Track if push to staging is complete
-            lastCommitMessage: null // Store commit message from push
+            lastCommitMessage: null, // Store commit message from push
+            currentFileData: null, // Store current file data from staging for download
+            hasDownloadedCurrent: false, // Track if user downloaded the current version
+            currentFileExists: false // Track if file exists in staging
         };
 
         // DOM Elements
@@ -620,6 +637,9 @@
 
             // Update button states
             updateButtons();
+
+            // Fetch and display current file info from staging
+            fetchCurrentFileInfo();
         }
 
         function showConfigForm() {
@@ -632,10 +652,172 @@
             if (state.filePath) document.getElementById('filePath').value = state.filePath;
         }
 
+        async function fetchCurrentFileInfo() {
+            if (!state.configSaved || !state.filePath) return;
+
+            try {
+                // Try to fetch the file from staging branch
+                const response = await fetch(
+                    `https://api.github.com/repos/${state.owner}/${state.repo}/contents/${state.filePath}?ref=staging`,
+                    {
+                        headers: {
+                            'Authorization': `token ${state.token}`,
+                            'Accept': 'application/vnd.github.v3+json'
+                        }
+                    }
+                );
+
+                if (response.ok) {
+                    const fileData = await response.json();
+
+                    // Store file data for download
+                    state.currentFileData = fileData;
+                    state.currentFileExists = true;
+                    state.hasDownloadedCurrent = false; // Reset download status
+
+                    // Display file info
+                    const currentFileInfo = document.getElementById('currentFileInfo');
+                    const currentFileName = document.getElementById('currentFileName');
+                    const currentFileDetails = document.getElementById('currentFileDetails');
+
+                    currentFileName.textContent = fileData.name;
+
+                    const sizeKB = (fileData.size / 1024).toFixed(2);
+                    currentFileDetails.textContent = `Size: ${sizeKB} KB | SHA: ${fileData.sha.substring(0, 7)}`;
+
+                    currentFileInfo.style.display = 'block';
+
+                    // Block upload until download
+                    blockUploadUntilDownload();
+                } else {
+                    // File doesn't exist in staging yet - allow upload
+                    state.currentFileExists = false;
+                    state.hasDownloadedCurrent = true; // Allow upload for first-time files
+                    console.log('File not found in staging branch');
+                }
+            } catch (error) {
+                console.error('Error fetching current file:', error);
+            }
+        }
+
+        function blockUploadUntilDownload() {
+            const uploadBtn = document.getElementById('uploadBtn');
+            const uploadBtnText = document.getElementById('uploadBtnText');
+            const uploadBtnSubtext = document.getElementById('uploadBtnSubtext');
+            const csvFileInput = document.getElementById('csvFile');
+
+            // Disable file input
+            csvFileInput.disabled = true;
+
+            // Update button appearance
+            uploadBtn.style.opacity = '0.5';
+            uploadBtn.style.cursor = 'not-allowed';
+            uploadBtn.style.borderColor = '#f85149';
+
+            // Update text
+            uploadBtnText.textContent = '⚠️ Please download current version first';
+            uploadBtnSubtext.textContent = 'Click "Download Current" button above to unlock upload';
+            uploadBtnSubtext.style.color = '#f85149';
+        }
+
+        function unblockUpload() {
+            const uploadBtn = document.getElementById('uploadBtn');
+            const uploadBtnText = document.getElementById('uploadBtnText');
+            const uploadBtnSubtext = document.getElementById('uploadBtnSubtext');
+            const csvFileInput = document.getElementById('csvFile');
+
+            // Enable file input
+            csvFileInput.disabled = false;
+
+            // Restore button appearance
+            uploadBtn.style.opacity = '1';
+            uploadBtn.style.cursor = 'pointer';
+            uploadBtn.style.borderColor = '#30363d';
+
+            // Restore text
+            uploadBtnText.textContent = 'Click to select or drag & drop your CSV file';
+            uploadBtnSubtext.textContent = 'Accepted: .csv files';
+            uploadBtnSubtext.style.color = '#6e7681';
+        }
+
+        function blockUploadAfterPush() {
+            const uploadBtn = document.getElementById('uploadBtn');
+            const uploadBtnText = document.getElementById('uploadBtnText');
+            const uploadBtnSubtext = document.getElementById('uploadBtnSubtext');
+            const csvFileInput = document.getElementById('csvFile');
+
+            // Disable file input
+            csvFileInput.disabled = true;
+
+            // Update button appearance
+            uploadBtn.style.opacity = '0.5';
+            uploadBtn.style.cursor = 'not-allowed';
+            uploadBtn.style.borderColor = '#f85149';
+
+            // Update text
+            uploadBtnText.textContent = '🔒 Upload locked after push to staging';
+            uploadBtnSubtext.textContent = 'Download the latest version first or refresh to start a new update';
+            uploadBtnSubtext.style.color = '#f85149';
+        }
+
+        async function downloadCurrentFile() {
+            if (!state.currentFileData) {
+                showStatus('commitStatus', '✗ No current file available to download', 'error');
+                return;
+            }
+
+            try {
+                // Decode base64 content
+                const base64Content = state.currentFileData.content;
+                const binaryString = atob(base64Content);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                // Create blob and download
+                const blob = new Blob([bytes], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = state.currentFileData.name;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                // Mark as downloaded and unblock upload
+                state.hasDownloadedCurrent = true;
+                unblockUpload();
+
+                showStatus('commitStatus', '✓ File downloaded successfully. You can now upload your changes.', 'success');
+                setTimeout(() => {
+                    document.getElementById('commitStatus').style.display = 'none';
+                }, 3000);
+            } catch (error) {
+                showStatus('commitStatus', `✗ Error downloading file: ${error.message}`, 'error');
+                console.error('Download error:', error);
+            }
+        }
+
         function handleFileSelect(e) {
             const file = e.target.files[0];
-            
+
             if (!file) return;
+
+            // Check if push has already been completed
+            if (state.pushedToStaging) {
+                alert('🔒 Upload is locked after pushing to staging.\n\nPlease download the latest version first or refresh the page to start a new update.');
+                csvFileInput.value = '';
+                return;
+            }
+
+            // Check if user needs to download current version first
+            if (state.currentFileExists && !state.hasDownloadedCurrent) {
+                alert('⚠️ Please download the current version from staging before uploading changes.\n\nClick the "Download Current" button to get the latest file.');
+                csvFileInput.value = '';
+                return;
+            }
 
             if (!file.name.endsWith('.csv')) {
                 alert('Please select a CSV file');
@@ -652,21 +834,11 @@
                         <span class="file-name">${file.name}</span>
                         <span style="margin-left: 10px;">(${sizeKB} KB)</span>
                     </div>
-                    <button class="secondary" onclick="clearFile()" style="width: auto; padding: 6px 12px;">Clear</button>
                 </div>
             `;
             fileInfo.classList.add('show');
             uploadBtn.classList.add('has-file');
 
-            updateButtons();
-        }
-
-        function clearFile() {
-            state.csvFile = null;
-            csvFileInput.value = '';
-            fileInfo.classList.remove('show');
-            uploadBtn.classList.remove('has-file');
-            state.pushedToStaging = false;
             updateButtons();
         }
 
@@ -782,6 +954,9 @@
                 state.pushedToStaging = true;
                 state.lastCommitMessage = message;
 
+                // Block further uploads after push
+                blockUploadAfterPush();
+
                 // Show push success
                 showStatus('commitStatus', '✓ Successfully pushed to staging branch! You can now create a pull request.', 'success');
 
@@ -818,12 +993,27 @@
                     'success'
                 );
 
-                // Reset form
-                clearFile();
-                document.getElementById('commitMessage').value = '';
+                // Reset state
                 state.pushedToStaging = false;
                 state.lastCommitMessage = null;
+                state.csvFile = null;
+                state.hasDownloadedCurrent = false;
+                state.currentFileData = null;
+                state.currentFileExists = false;
+
+                // Clear form
+                document.getElementById('commitMessage').value = '';
+                document.getElementById('csvFile').value = '';
+                document.getElementById('fileInfo').classList.remove('show');
+                document.getElementById('uploadBtn').classList.remove('has-file');
+                document.getElementById('currentFileInfo').style.display = 'none';
+
+                // Re-enable upload
+                unblockUpload();
                 updateButtons();
+
+                // Fetch latest file info for next update
+                setTimeout(fetchCurrentFileInfo, 500);
 
             } catch (error) {
                 showStatus('commitStatus', `✗ Error: ${error.message}`, 'error');
@@ -974,8 +1164,8 @@
             element.innerHTML = message;
         }
 
-        // Global function for inline handler
-        window.clearFile = clearFile;
+        // Global functions for inline handlers
+        window.downloadCurrentFile = downloadCurrentFile;
     </script>
 </body>
 </html>
